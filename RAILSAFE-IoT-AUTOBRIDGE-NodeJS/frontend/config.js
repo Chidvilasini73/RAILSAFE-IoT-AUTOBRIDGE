@@ -4,5 +4,5 @@
  */
 window.RAILSAFE_CONFIG = {
   mode: "api",
-  apiBaseUrl: "http://localhost:3000"
+  apiBaseUrl: "https://railsafe-backend.onrender.com"
 };
