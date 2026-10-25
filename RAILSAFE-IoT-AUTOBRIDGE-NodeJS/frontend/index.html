@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1423">
+  <title>RAILSAFE IoT-AUTOBRIDGE | Ongole OGL</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">R<span>+</span></div>
+      <div class="brand-copy">
+        <h1>RAILSAFE <span>IoT-AUTOBRIDGE</span></h1>
+        <p>Automatic Footbridge Control System <b>•</b> Ongole Railway Station (OGL)</p>
+      </div>
+      <div class="top-status">
+        <div class="clock-block"><small>LOCAL SYSTEM TIME</small><strong id="clock">--:--:--</strong><span id="date-label">Loading date…</span></div>
+        <div class="status-pill live"><i></i> LIVE TELEMETRY</div>
+        <div class="status-pill hardware" id="hardware-status"><i></i> ESP32: <b>ONLINE</b></div>
+      </div>
+      <button class="mobile-menu" id="menu-toggle" aria-label="Toggle navigation">☰</button>
+    </header>
+
+    <nav class="nav-tabs" id="nav-tabs" aria-label="Main navigation">
+      <button class="nav-tab active" data-view="dashboard">▦ Dashboard</button>
+      <button class="nav-tab" data-view="search">⌕ Train Search</button>
+      <button class="nav-tab" data-view="tracking">◎ Live Tracking</button>
+      <button class="nav-tab staff-tab" data-view="control">⇄ Bridge Control <span>STAFF</span></button>
+      <button class="nav-tab" data-view="logs">≡ Event Logs</button>
+      <button class="nav-tab" data-view="health">♡ System Health</button>
+      <button class="nav-tab" data-view="studio">◈ Studio</button>
+      <button class="nav-tab" data-view="dev">⌘ DEV</button>
+    </nav>
+
+    <main>
+      <section class="toolbar">
+        <div class="breadcrumb"><span>OPERATIONS</span><b>/</b><strong id="view-title">Dashboard Overview</strong></div>
+        <div class="toolbar-actions">
+          <label class="role-label" for="role-select">ACCESS ROLE</label>
+          <select id="role-select" aria-label="Select access role">
+            <option value="passenger">Passenger (Read Only)</option>
+            <option value="operator">Railway Operator</option>
+            <option value="admin">Administrator</option>
+          </select>
+          <span class="security-level" id="security-level">L0 · READ ONLY</span>
+          <button class="icon-btn" id="audio-toggle" aria-pressed="false" title="Toggle audio alerts">♬ <span id="audio-label">Sound off</span></button>
+          <button class="icon-btn" id="disclaimer-btn">ⓘ Prototype</button>
+        </div>
+      </section>
+
+      <div class="prototype-note" id="prototype-note">
+        <strong>PROTOTYPE / SIMULATION</strong> — Train positions, telemetry, interlocks and actuator controls on this page are mock data. This frontend is not connected to railway signalling, live train feeds, or certified safety hardware.
+        <button id="dismiss-note" aria-label="Dismiss prototype notice">×</button>
+      </div>
+
+      <section class="safety-banner" id="safety-banner" role="alert">
+        <div class="safety-symbol">!</div>
+        <div class="safety-copy">
+          <div class="banner-kicker"><span class="pulse-dot"></span> HIGH-PRIORITY SAFETY INTERLOCK <span class="banner-tag">SIMULATED EVENT</span></div>
+          <h2 id="alert-title">Approaching train detected — bridge closure sequence requested</h2>
+          <p id="alert-detail">Train 12711 · Pinakini Express · 4.2 km from OGL · Estimated arrival 4 min 12 sec</p>
+        </div>
+        <div class="banner-action"><span class="tiny-label">INTERLOCK STATE</span><strong id="interlock-state">CLOSURE REQUESTED</strong><span class="muted">Awaiting simulated confirmation</span></div>
+      </section>
+
+      <section class="metrics-grid" aria-label="System overview metrics">
+        <article class="metric-card"><div class="metric-top"><span>Corridor trains</span><span class="metric-icon blue">↗</span></div><strong id="metric-trains">04</strong><small><i class="good-dot"></i> Tracked in simulation</small><div class="metric-spark blue-spark">▁▂▃▅▄▆▅▇</div></article>
+        <article class="metric-card"><div class="metric-top"><span>Bridge deployment</span><span class="metric-icon cyan">⇄</span></div><strong><span id="metric-deploy">35</span><em>%</em></strong><small><i class="warn-dot"></i> Partial deployment (mock)</small><div class="progress"><span id="deploy-progress" style="width:35%"></span></div></article>
+        <article class="metric-card"><div class="metric-top"><span>Motor current</span><span class="metric-icon purple">ϟ</span></div><strong><span id="metric-current">2.4</span><em>A</em></strong><small><i class="good-dot"></i> Within demo range</small><div class="metric-spark purple-spark">▂▃▂▄▅▄▆▅</div></article>
+        <article class="metric-card"><div class="metric-top"><span>Safety interlock</span><span class="metric-icon red">⛨</span></div><strong class="metric-state" id="metric-interlock">ACTIVE</strong><small><i class="warn-dot"></i> Train proximity simulated</small><div class="metric-foot"><span class="status-chip danger">CLOSURE REQUEST</span></div></article>
+      </section>
+
+      <section class="panel train-panel" id="train-panel">
+        <div class="panel-heading">
+          <div><div class="eyebrow">CORRIDOR MONITORING</div><h2>Approaching Corridor Trains <span class="count-badge" id="train-count">04</span></h2><p>Vijayawada ↔ Chennai line · Illustrative telemetry only</p></div>
+          <div class="heading-actions"><span class="updated-label"><i class="live-dot"></i> Updated <b id="updated-at">just now</b></span><button class="outline-btn" id="refresh-btn">↻ Refresh data</button></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>TRAIN</th><th>TYPE</th><th>CORRIDOR ROUTE</th><th>DISTANCE</th><th>SPEED</th><th>ETA AT OGL</th><th>SAFETY STATUS</th><th></th></tr></thead>
+            <tbody id="train-table-body"></tbody>
+          </table>
+        </div>
+        <div class="panel-foot"><span><i class="legend-dot red-dot"></i> Critical zone ≤ 2 km</span><span><i class="legend-dot amber-dot"></i> Express zone ≤ 5 km</span><span><i class="legend-dot green-dot"></i> Outside local zone</span><span class="foot-right">Mock train data · Not an official train feed</span></div>
+      </section>
+
+      <div class="content-grid">
+        <section class="panel map-panel" id="map-panel">
+          <div class="panel-heading compact">
+            <div><div class="eyebrow">GEOSPATIAL VIEW</div><h2>Live Spatial Track &amp; Safety Zones</h2><p>Ongole Railway Corridor · 15.5034° N, 80.0505° E</p></div>
+            <span class="status-chip blue-chip">GIS / DEMO</span>
+          </div>
+          <div class="map-toolbar"><span><i class="legend-dot red-dot"></i> 2 km critical zone</span><span><i class="legend-dot amber-dot"></i> 5 km express zone</span><span><i class="legend-dot cyan-dot"></i> Train marker</span><button id="recenter-map" class="text-btn">◎ Recenter</button></div>
+          <div id="map" role="application" aria-label="Interactive illustrative map of Ongole railway corridor"></div>
+          <div class="map-bottom"><span>⌖ <b>OGL</b> · Ongole Station</span><span>Map tiles require internet access</span><span id="map-position">15.5034, 80.0505</span></div>
+        </section>
+
+        <section class="panel bridge-panel" id="bridge-panel">
+          <div class="panel-heading compact"><div><div class="eyebrow">ACTUATION / DIGITAL TWIN</div><h2>Retractable Footbridge</h2><p>Conceptual schematic · no hardware connection</p></div><span class="status-chip amber-chip" id="bridge-state-chip">PARTIALLY DEPLOYED</span></div>
+          <div class="twin-stage">
+            <div class="twin-label left-label">PLATFORM 1 <small>Main building side</small></div>
+            <div class="twin-label right-label">PLATFORM 2 <small>Island platform</small></div>
+            <div class="platform platform-left"><span>PLATFORM 1</span></div><div class="platform platform-right"><span>PLATFORM 2</span></div>
+            <div class="track-lines"><i></i><i></i><i></i></div>
+            <div class="bridge-track"><div class="bridge-deck" id="bridge-deck"><span>TELESCOPIC BRIDGE DECK</span></div><div class="bridge-lock lock-left"></div><div class="bridge-lock lock-right"></div></div>
+            <div class="drive drive-left">▰ <small>LINEAR RACK DRIVE</small></div><div class="drive drive-right">▰ <small>LINEAR RACK DRIVE</small></div>
+            <div class="twin-legend"><span><i class="legend-dot cyan-dot"></i> Bridge deck</span><span><i class="legend-dot purple-dot"></i> Electromagnetic lock</span><span><i class="legend-dot green-dot"></i> Platform edge</span></div>
+          </div>
+          <div class="bridge-controls">
+            <div class="deploy-row"><div><small>DEPLOYMENT POSITION</small><strong><span id="bridge-position">35</span>%</strong></div><div class="deploy-bar"><span id="bridge-position-bar" style="width:35%"></span></div></div>
+            <div class="telemetry-grid">
+              <div><small>MOTOR CURRENT</small><strong><span id="motor-current">2.4</span> <em>A</em></strong></div>
+              <div><small>ESP32 LINK</small><strong id="wifi-strength">−48 <em>dBm</em></strong></div>
+              <div><small>CROSSING GATE</small><strong id="gate-status" class="text-warn">CLOSED</strong></div>
+              <div><small>LIMIT SWITCH LS1</small><strong id="ls1-status" class="text-good">ACTIVE</strong></div>
+              <div><small>LIMIT SWITCH LS2</small><strong id="ls2-status" class="text-muted">INACTIVE</strong></div>
+              <div><small>LOCKS</small><strong id="lock-status" class="text-good">ENGAGED</strong></div>
+            </div>
+            <div class="bridge-state-note"><span class="pulse-dot"></span><span id="bridge-note">Safety interlock engaged — movement commands are simulated.</span></div>
+            <div class="control-actions" id="control-actions"><button class="action-btn deploy-btn" data-action="deploy">↑ Deploy bridge</button><button class="action-btn retract-btn" data-action="retract">↓ Retract bridge</button><button class="action-btn stop-btn" data-action="stop">■ Stop actuator</button></div>
+            <div class="role-hint" id="role-hint">Passenger view: controls are locked. Select Railway Operator to enable demo controls.</div>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel secondary-panel" id="secondary-panel">
+        <div class="panel-heading compact"><div><div class="eyebrow">EVENT STREAM</div><h2>Recent Events</h2><p>Local browser simulation log</p></div><button class="outline-btn" id="export-logs">⇩ Export CSV</button></div>
+        <div class="event-list" id="event-list"></div>
+      </section>
+
+      <section class="panel secondary-panel hidden" id="search-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">TRAIN SEARCH</div><h2>Search corridor trains</h2><p>Search this page's illustrative train dataset</p></div></div>
+        <div class="search-row"><input id="train-search-input" type="search" placeholder="Search train name, number or route…"><button class="primary-btn" id="train-search-btn">Search trains</button></div><div id="search-results" class="search-results"></div>
+      </section>
+      <section class="panel secondary-panel hidden" id="tracking-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">LIVE TRACKING</div><h2>Train tracking workspace</h2><p>Select a train to highlight its illustrative marker on the map.</p></div></div><div class="tracking-cards" id="tracking-cards"></div>
+      </section>
+      <section class="panel secondary-panel hidden" id="control-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">STAFF WORKSPACE</div><h2>Bridge Control Console</h2><p>Role-gated demo actions only. Not suitable for real railway operation.</p></div></div><div class="control-console"><div><h3>Command readiness</h3><p id="console-readiness">Read-only access. Choose Railway Operator or Administrator to see the simulated command panel.</p></div><div class="console-state" id="console-state">LOCKED</div></div><p class="warning-copy">A real installation requires a certified safety controller, independent hardwired interlocks, railway authority approval, authenticated command audit trails and fail-safe verification. Browser UI controls must never directly operate critical infrastructure.</p></section>
+      <section class="panel secondary-panel hidden" id="logs-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">AUDIT / DIAGNOSTICS</div><h2>Event Logs</h2><p>Session events generated by this demo</p></div><button class="outline-btn" id="clear-logs">Clear session logs</button></div><div class="full-log-list" id="full-log-list"></div>
+      </section>
+      <section class="panel secondary-panel hidden" id="health-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">DEVICE MONITORING</div><h2>System Health</h2><p>Simulated hardware telemetry values</p></div></div><div class="health-grid"><div class="health-item"><span>ESP32 connection</span><strong class="text-good">ONLINE · SIMULATED</strong></div><div class="health-item"><span>Wi-Fi signal</span><strong id="health-wifi">−48 dBm</strong></div><div class="health-item"><span>Motor driver</span><strong class="text-good">NOMINAL · MOCK</strong></div><div class="health-item"><span>Limit switch circuit</span><strong class="text-warn">DEMO ONLY</strong></div><div class="health-item"><span>Telemetry freshness</span><strong id="health-freshness">1 second</strong></div><div class="health-item"><span>Safety controller certification</span><strong class="text-danger">NOT CERTIFIED</strong></div></div></section>
+      <section class="panel secondary-panel hidden" id="studio-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">SIMULATION STUDIO</div><h2>Scenario controls</h2><p>Test UI states without connecting hardware.</p></div></div><div class="studio-actions"><button class="outline-btn" data-scenario="normal">Normal corridor</button><button class="outline-btn" data-scenario="approach">Approaching train alert</button><button class="outline-btn" data-scenario="fault">Simulated device fault</button></div><p class="muted">Scenarios only change frontend mock data and visual states.</p></section>
+      <section class="panel secondary-panel hidden" id="dev-view">
+        <div class="panel-heading compact"><div><div class="eyebrow">DEVELOPER INFORMATION</div><h2>Integration status</h2><p>Frontend scaffold and future data adapters</p></div></div><div class="health-grid"><div class="health-item"><span>Data mode</span><strong>MOCK TELEMETRY</strong></div><div class="health-item"><span>Map provider</span><strong>Leaflet + OpenStreetMap</strong></div><div class="health-item"><span>Backend API</span><strong>NOT CONFIGURED</strong></div><div class="health-item"><span>Train feed</span><strong>NOT CONNECTED</strong></div><div class="health-item"><span>ESP32 transport</span><strong>NOT CONNECTED</strong></div><div class="health-item"><span>Safety certification</span><strong class="text-danger">NOT CERTIFIED</strong></div></div><pre class="code-note">const CONFIG = {
+  mode: "mock",
+  station: { code: "OGL", lat: 15.5034, lng: 80.0505 },
+  apiBaseUrl: null,       // Configure a trusted backend
+  telemetryIntervalMs: 5000
+};</pre></section>
+    </main>
+    <footer><span>RAILSAFE IoT-AUTOBRIDGE <b>•</b> OGL</span><span>FRONTEND PROTOTYPE · SIMULATED TELEMETRY · NOT FOR OPERATIONAL USE</span><span id="footer-clock">SYSTEM READY</span></footer>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="modal-backdrop hidden" id="disclaimer-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal"><button class="modal-close" id="modal-close" aria-label="Close">×</button><div class="eyebrow">IMPORTANT SAFETY INFORMATION</div><h2 id="modal-title">Prototype disclaimer</h2><p>This project is a frontend demonstration. All train locations, speeds, ETAs, ESP32 status, limit switches, motor current, bridge position and safety alerts are generated mock values.</p><p>It does not connect to railway signalling, official train APIs, GPS hardware or an ESP32. Never use this page to make real-world railway or passenger-safety decisions. A real system needs approved railway engineering, certified fail-safe hardware and independent safety validation.</p><button class="primary-btn" id="modal-ack">I understand</button></div></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
