@@ -1,74 +1,28 @@
-/* RAILSAFE IoT-AUTOBRIDGE
-   HTTP telemetry frontend.
-   Train markers are illustrative, not real GPS.
-   Bridge actions are simulations only.
+/* RAILSAFE IoT-AUTOBRIDGE — prototype dashboard.
+   Train positions and bridge controls are simulations.
+   ESP32 telemetry is displayed separately from simulated values.
 */
 "use strict";
 
 const CONFIG = {
   mode: (window.RAILSAFE_CONFIG && window.RAILSAFE_CONFIG.mode) || "mock",
-  apiBaseUrl:
-    (window.RAILSAFE_CONFIG && window.RAILSAFE_CONFIG.apiBaseUrl) || "",
+  apiBaseUrl: (window.RAILSAFE_CONFIG && window.RAILSAFE_CONFIG.apiBaseUrl) || "",
   station: { code: "OGL", lat: 15.5034, lng: 80.0505 },
-  telemetryIntervalMs: 5000
+  telemetryIntervalMs: 10000
 };
 
 const $ = (id) => document.getElementById(id);
 
 const trains = [
-  {
-    id: "12711",
-    name: "Pinakini Express",
-    type: "Express",
-    route: "Vijayawada → Chennai",
-    distance: 4.2,
-    speed: 96,
-    eta: 4.2,
-    status: "CAUTION",
-    lat: 15.535,
-    lng: 80.030
-  },
-  {
-    id: "12712",
-    name: "Pinakini Express",
-    type: "Express",
-    route: "Chennai → Vijayawada",
-    distance: 8.7,
-    speed: 91,
-    eta: 8.7,
-    status: "CLEAR",
-    lat: 15.448,
-    lng: 80.073
-  },
-  {
-    id: "17225",
-    name: "Amaravati Express",
-    type: "Superfast",
-    route: "Vijayawada → Hubballi",
-    distance: 11.6,
-    speed: 78,
-    eta: 11.6,
-    status: "CLEAR",
-    lat: 15.402,
-    lng: 80.087
-  },
-  {
-    id: "17405",
-    name: "Krishna Express",
-    type: "Passenger",
-    route: "Tirupati → Adilabad",
-    distance: 2.1,
-    speed: 54,
-    eta: 2.1,
-    status: "CRITICAL",
-    lat: 15.520,
-    lng: 80.041
-  }
+  { id: "12711", name: "Pinakini Express", type: "Express", route: "Vijayawada → Chennai", distance: 4.2, speed: 96, eta: 4.2, status: "CAUTION", lat: 15.535, lng: 80.030 },
+  { id: "12712", name: "Pinakini Express", type: "Express", route: "Chennai → Vijayawada", distance: 8.7, speed: 91, eta: 8.7, status: "CLEAR", lat: 15.448, lng: 80.073 },
+  { id: "17225", name: "Amaravati Express", type: "Superfast", route: "Vijayawada → Hubballi", distance: 11.6, speed: 78, eta: 11.6, status: "CLEAR", lat: 15.402, lng: 80.087 },
+  { id: "17405", name: "Krishna Express", type: "Passenger", route: "Tirupati → Adilabad", distance: 2.1, speed: 54, eta: 2.1, status: "CRITICAL", lat: 15.520, lng: 80.041 }
 ];
 
 let deployment = 35;
-let motorCurrent = 2.4;
-let wifi = -48;
+let motorCurrent = null;
+let wifi = null;
 let role = "passenger";
 let audioOn = false;
 let map = null;
@@ -76,6 +30,7 @@ let trainMarkers = {};
 let eventLog = [];
 let toastTimer;
 let activeView = "dashboard";
+let lastTelemetry = null;
 
 const viewNames = {
   dashboard: "Dashboard Overview",
@@ -103,39 +58,32 @@ function stamp() {
 
 function updateClock() {
   const d = new Date();
-
-  $("clock").textContent = d.toLocaleTimeString("en-IN", {
-    hour12: false
-  });
-
+  $("clock").textContent = d.toLocaleTimeString("en-IN", { hour12: false });
   $("date-label").textContent = d.toLocaleDateString("en-IN", {
     weekday: "short",
     day: "2-digit",
     month: "short",
     year: "numeric"
   });
-
   $("footer-clock").textContent = "UPDATED " + stamp();
 }
 
 function etaText(distance, speed) {
-  const minutes = (distance / Math.max(speed, 1)) * 60;
-
+  const minutes = distance / Math.max(speed, 1) * 60;
   return minutes < 1
     ? `${Math.round(minutes * 60)} sec`
     : `${Math.floor(minutes)}m ${Math.round((minutes % 1) * 60)}s`;
 }
 
-function safetyFor(train) {
-  if (train.distance <= 2.5) return "CRITICAL";
-  if (train.distance <= 5) return "CAUTION";
+function safetyFor(t) {
+  if (t.distance <= 2.5) return "CRITICAL";
+  if (t.distance <= 5) return "CAUTION";
   return "CLEAR";
 }
 
 function renderTrains() {
-  $("train-table-body").innerHTML = trains.map((t) => {
+  $("train-table-body").innerHTML = trains.map(t => {
     const safety = safetyFor(t);
-
     return `
       <tr>
         <td>
@@ -153,15 +101,14 @@ function renderTrains() {
         <td><span class="speed">${t.speed} km/h</span></td>
         <td><span class="eta">${etaText(t.distance, t.speed)}</span></td>
         <td><span class="safety ${safety.toLowerCase()}">${safety}</span></td>
-        <td><button class="track-btn" data-track="${t.id}">◎ Track live</button></td>
-      </tr>
-    `;
+        <td><button class="track-btn" data-track="${t.id}">◎ Track demo</button></td>
+      </tr>`;
   }).join("");
 
   $("metric-trains").textContent = String(trains.length).padStart(2, "0");
   $("train-count").textContent = String(trains.length).padStart(2, "0");
 
-  document.querySelectorAll("[data-track]").forEach((button) => {
+  document.querySelectorAll("[data-track]").forEach(button => {
     button.addEventListener("click", () => trackTrain(button.dataset.track));
   });
 
@@ -170,24 +117,20 @@ function renderTrains() {
 }
 
 function updateAlert() {
-  const train = [...trains].sort((a, b) => a.distance - b.distance)[0];
-  const critical = train.distance <= 5;
+  const t = [...trains].sort((a, b) => a.distance - b.distance)[0];
+  const critical = t.distance <= 5;
 
-  $("safety-banner").style.borderColor =
-    critical ? "#75414d" : "#285346";
-
+  $("safety-banner").style.borderColor = critical ? "#75414d" : "#285346";
   $("alert-title").textContent = critical
-    ? "Approaching train detected — bridge closure sequence requested"
-    : "No train currently inside the demo express safety zone";
+    ? "Simulated approaching train — closure sequence not connected"
+    : "No train inside the simulated safety zone";
 
   $("alert-detail").textContent =
-    `Train ${train.id} · ${train.name} · ${train.distance.toFixed(1)} km from OGL · Estimated arrival ${etaText(train.distance, train.speed)}`;
+    `DEMO DATA · Train ${t.id} · ${t.name} · ${t.distance.toFixed(1)} km from OGL · Estimated arrival ${etaText(t.distance, t.speed)}`;
 
-  $("interlock-state").textContent = critical ? "CLOSURE REQUESTED" : "MONITORING";
-  $("metric-interlock").textContent = critical ? "ACTIVE" : "MONITOR";
-
-  $("metric-interlock").style.color =
-    critical ? "var(--amber)" : "var(--green)";
+  $("interlock-state").textContent = critical ? "DEMO ALERT" : "DEMO MONITORING";
+  $("metric-interlock").textContent = critical ? "DEMO ALERT" : "DEMO";
+  $("metric-interlock").style.color = critical ? "var(--amber)" : "var(--green)";
 }
 
 function renderBridge() {
@@ -197,53 +140,44 @@ function renderBridge() {
   $("bridge-position-bar").style.width = deployment + "%";
   $("bridge-deck").style.width = Math.max(8, deployment) + "%";
 
-  $("metric-current").textContent = motorCurrent.toFixed(1);
-  $("motor-current").textContent = motorCurrent.toFixed(1);
+  $("metric-current").textContent =
+    motorCurrent === null ? "N/A" : motorCurrent.toFixed(1);
 
-  $("wifi-strength").innerHTML = `${wifi} <em>dBm</em>`;
-  $("health-wifi").textContent = wifi + " dBm";
+  $("motor-current").textContent =
+    motorCurrent === null ? "N/A" : motorCurrent.toFixed(1);
 
-  $("ls1-status").textContent = deployment <= 5 ? "INACTIVE" : "ACTIVE";
-  $("ls1-status").className = deployment <= 5 ? "text-muted" : "text-good";
+  $("wifi-strength").innerHTML =
+    wifi === null ? "N/A" : `${wifi} <em>dBm</em>`;
 
-  $("ls2-status").textContent = deployment >= 95 ? "ACTIVE" : "INACTIVE";
-  $("ls2-status").className = deployment >= 95 ? "text-good" : "text-muted";
+  $("health-wifi").textContent =
+    wifi === null ? "N/A" : wifi + " dBm";
 
-  $("lock-status").textContent = "ENGAGED";
+  $("ls1-status").textContent = "NOT CONNECTED";
+  $("ls1-status").className = "text-muted";
+  $("ls2-status").textContent = "NOT CONNECTED";
+  $("ls2-status").className = "text-muted";
+  $("lock-status").textContent = "SIMULATION ONLY";
 
-  const trainNear = trains.some((t) => t.distance <= 5);
-
-  $("gate-status").textContent = trainNear ? "CLOSED" : "OPEN";
-  $("gate-status").className = trainNear ? "text-warn" : "text-good";
+  $("gate-status").textContent = "SIMULATION";
+  $("gate-status").className = "text-warn";
 
   $("bridge-state-chip").textContent =
-    deployment === 100
-      ? "FULLY DEPLOYED"
-      : deployment === 0
-        ? "FULLY RETRACTED"
-        : "PARTIALLY DEPLOYED";
+    deployment === 100 ? "DEMO FULLY DEPLOYED" :
+    deployment === 0 ? "DEMO FULLY RETRACTED" :
+    "DEMO PARTIAL POSITION";
 
-  $("bridge-note").textContent = trainNear
-    ? "Safety interlock engaged — movement commands are simulated."
-    : "No close train in current mock data — commands remain simulation-only.";
+  $("bridge-note").textContent =
+    "Simulated bridge position. No physical bridge actuator or safety interlock is connected.";
 }
 
 function addEvent(title, detail, kind = "info") {
-  eventLog.unshift({
-    title,
-    detail,
-    time: stamp(),
-    kind
-  });
-
+  eventLog.unshift({ title, detail, time: stamp(), kind });
   if (eventLog.length > 80) eventLog.length = 80;
-
   renderEvents();
 }
 
 function renderEvents() {
   const rows = eventLog.slice(0, 5);
-
   $("event-list").innerHTML =
     rows.map(eventHtml).join("") ||
     '<p class="muted">No events in this session.</p>';
@@ -253,44 +187,36 @@ function renderEvents() {
     '<p class="muted">No events in this session.</p>';
 }
 
-function eventHtml(event) {
-  const icon =
-    event.kind === "warning" ? "⚠" :
-    event.kind === "control" ? "⇄" : "↗";
+function eventHtml(e) {
+  const icon = e.kind === "warning" ? "⚠" :
+    e.kind === "control" ? "⇄" : "↗";
 
   return `
     <div class="event-row">
       <div class="event-icon">${icon}</div>
       <div>
-        <strong>${escapeHtml(event.title)}</strong>
-        <p>${escapeHtml(event.detail)}</p>
+        <strong>${escapeHtml(e.title)}</strong>
+        <p>${escapeHtml(e.detail)}</p>
       </div>
-      <time>${event.time}</time>
-    </div>
-  `;
+      <time>${e.time}</time>
+    </div>`;
 }
 
 function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({
+  return String(value).replace(/[&<>"']/g, c => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
     '"': "&quot;",
     "'": "&#39;"
-  })[char]);
+  }[c]));
 }
 
 function showToast(message) {
-  const toast = $("toast");
-
-  toast.textContent = message;
-  toast.classList.add("show");
-
+  $("toast").textContent = message;
+  $("toast").classList.add("show");
   clearTimeout(toastTimer);
-
-  toastTimer = setTimeout(() => {
-    toast.classList.remove("show");
-  }, 3200);
+  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 3200);
 }
 
 function setRole(newRole) {
@@ -306,43 +232,41 @@ function setRole(newRole) {
 
   const allowed = role !== "passenger";
 
-  document.querySelectorAll("[data-action]").forEach((button) => {
+  document.querySelectorAll("[data-action]").forEach(button => {
     button.disabled = !allowed;
   });
 
   $("role-hint").textContent = allowed
-    ? "Demo controls enabled for this browser session only."
-    : "Passenger view: controls are locked. Select Railway Operator to enable demo controls.";
+    ? "Demo controls only. No physical hardware command is sent."
+    : "Read-only view. Select a demo staff role to enable simulated controls.";
 
   $("console-state").textContent = allowed ? "DEMO UNLOCKED" : "LOCKED";
 
   $("console-readiness").textContent = allowed
-    ? "Role verified locally. Commands below only alter the digital-twin mock state; no physical actuator is connected."
-    : "Read-only access. Choose Railway Operator or Administrator to see the simulated command panel.";
+    ? "Commands modify simulated state only; no physical actuator is connected."
+    : "Read-only access. All bridge commands are simulations.";
 
   if (activeView === "control" && !allowed) {
-    showToast("Bridge control is restricted to Railway Operator or Administrator role.");
+    showToast("Select a demo staff role to enable simulated controls.");
   }
 }
 
 function actionBridge(action) {
   if (role === "passenger") {
-    showToast("Access denied: select a staff role for demo controls.");
+    showToast("Access denied: select a demo staff role.");
     return;
   }
 
   if (action === "deploy") deployment = Math.min(100, deployment + 25);
   if (action === "retract") deployment = Math.max(0, deployment - 25);
+
   if (action === "stop") motorCurrent = 0;
-  else motorCurrent = deployment === 0 || deployment === 100
-    ? 0.4
-    : 2.4 + Math.random() * 0.5;
 
   renderBridge();
 
   addEvent(
     `Simulated bridge command: ${action}`,
-    `Mock deployment position is now ${deployment}%. No hardware command was transmitted.`,
+    `Demo position is now ${deployment}%. No physical command was sent.`,
     "control"
   );
 
@@ -350,44 +274,38 @@ function actionBridge(action) {
 }
 
 function renderTrackingCards() {
-  $("tracking-cards").innerHTML = trains.map((t) => `
+  $("tracking-cards").innerHTML = trains.map(t => `
     <article class="tracking-card">
       <h3>${t.name} <span class="muted">#${t.id}</span></h3>
       <p>${t.route}</p>
-      <p>Distance <b>${t.distance.toFixed(1)} km</b> · Speed <b>${t.speed} km/h</b></p>
+      <p>DEMO distance <b>${t.distance.toFixed(1)} km</b> · DEMO speed <b>${t.speed} km/h</b></p>
       <span class="safety ${safetyFor(t).toLowerCase()}">${safetyFor(t)}</span>
-      <button class="track-btn" data-track="${t.id}">Focus map</button>
-    </article>
-  `).join("");
+      <button class="track-btn" data-track="${t.id}">Focus demo map</button>
+    </article>`).join("");
 
-  document.querySelectorAll("#tracking-cards [data-track]").forEach((button) => {
+  document.querySelectorAll("#tracking-cards [data-track]").forEach(button => {
     button.addEventListener("click", () => trackTrain(button.dataset.track));
   });
 }
 
 function trackTrain(id) {
-  const train = trains.find((t) => t.id === id);
-  if (!train) return;
+  const t = trains.find(x => x.id === id);
+  if (!t) return;
 
   switchView("tracking");
 
   if (map) {
-    map.setView([train.lat, train.lng], 13);
+    map.setView([t.lat, t.lng], 13);
     if (trainMarkers[id]) trainMarkers[id].openPopup();
   }
 
-  showToast(`Focused illustrative marker: ${train.name} (${id})`);
-
-  addEvent(
-    "Train marker focused",
-    `${train.name} ${id} selected in map view.`
-  );
+  showToast(`Illustrative train marker: ${t.name} (${id})`);
 }
 
 function initMap() {
   if (!window.L) {
     $("map").innerHTML =
-      '<div style="padding:24px;color:#a9bbce;line-height:1.7">Map library could not load. Connect to the internet to load Leaflet and OpenStreetMap tiles. Station coordinates: 15.5034, 80.0505.</div>';
+      '<div style="padding:24px;color:#a9bbce;line-height:1.7">Map library unavailable. Train markers are illustrative only.</div>';
     return;
   }
 
@@ -407,7 +325,7 @@ function initMap() {
     weight: 1.5,
     fillColor: "#ff6374",
     fillOpacity: 0.12
-  }).addTo(map).bindPopup("2 km critical safety zone (illustrative only)");
+  }).addTo(map).bindPopup("Illustrative 2 km zone — demo only");
 
   L.circle([CONFIG.station.lat, CONFIG.station.lng], {
     radius: 5000,
@@ -416,7 +334,7 @@ function initMap() {
     dashArray: "5 5",
     fillColor: "#f7b84b",
     fillOpacity: 0.06
-  }).addTo(map).bindPopup("5 km express monitoring zone (illustrative only)");
+  }).addTo(map).bindPopup("Illustrative 5 km zone — demo only");
 
   const stationIcon = L.divIcon({
     className: "station-pin",
@@ -425,44 +343,35 @@ function initMap() {
     iconAnchor: [8, 8]
   });
 
-  L.marker([CONFIG.station.lat, CONFIG.station.lng], {
-    icon: stationIcon
-  }).addTo(map).bindPopup(
-    "<b>OGL · Ongole Station</b><br>15.5034° N, 80.0505° E<br>Bridge status: simulated " +
-    deployment + "%"
-  );
+  L.marker([CONFIG.station.lat, CONFIG.station.lng], { icon: stationIcon })
+    .addTo(map)
+    .bindPopup("<b>OGL · Ongole Station</b><br>Illustrative location — train data is simulated.");
 
-  trains.forEach((train) => {
-    const color =
-      safetyFor(train) === "CRITICAL" ? "#ff6374" :
-      safetyFor(train) === "CAUTION" ? "#f7b84b" : "#48d7e8";
-
+  trains.forEach(t => {
     const icon = L.divIcon({
       className: "train-pin",
-      html: `<div style="background:${color};border:2px solid #e8ffff;border-radius:50%;width:13px;height:13px;box-shadow:0 0 0 5px #48d7e822"></div>`,
+      html: `<div style="background:${safetyFor(t) === "CRITICAL" ? "#ff6374" : safetyFor(t) === "CAUTION" ? "#f7b84b" : "#48d7e8"};border:2px solid #e8ffff;border-radius:50%;width:13px;height:13px;box-shadow:0 0 0 5px #48d7e822"></div>`,
       iconSize: [13, 13],
       iconAnchor: [6, 6]
     });
 
-    trainMarkers[train.id] = L.marker([train.lat, train.lng], {
-      icon
-    }).addTo(map).bindPopup(
-      `<b>${train.name}</b><br>Train ${train.id}<br>${train.distance.toFixed(1)} km from OGL<br>${safetyFor(train)} · Illustrative marker`
-    );
+    trainMarkers[t.id] = L.marker([t.lat, t.lng], { icon })
+      .addTo(map)
+      .bindPopup(`<b>${t.name}</b><br>Train ${t.id}<br>Illustrative marker — not live train tracking`);
   });
 }
 
 function switchView(view) {
   activeView = view;
 
-  document.querySelectorAll(".nav-tab").forEach((button) => {
+  document.querySelectorAll(".nav-tab").forEach(button => {
     button.classList.toggle("active", button.dataset.view === view);
   });
 
   $("view-title").textContent = viewNames[view] || "Dashboard Overview";
 
-  ["search", "tracking", "control", "logs", "health", "studio", "dev"].forEach((name) => {
-    $(`${name}-view`).classList.toggle("hidden", view !== name);
+  ["search", "tracking", "control", "logs", "health", "studio", "dev"].forEach(v => {
+    $(`${v}-view`).classList.toggle("hidden", view !== v);
   });
 
   $("train-panel").classList.toggle("hidden", !["dashboard", "search"].includes(view));
@@ -476,37 +385,31 @@ function switchView(view) {
 }
 
 function runSearch() {
-  const query = $("train-search-input").value.trim().toLowerCase();
+  const q = $("train-search-input").value.trim().toLowerCase();
 
-  const matches = trains.filter((train) =>
-    [train.name, train.id, train.type, train.route]
-      .some((value) => value.toLowerCase().includes(query))
+  const matches = trains.filter(t =>
+    [t.name, t.id, t.type, t.route].some(s => s.toLowerCase().includes(q))
   );
 
   $("search-results").innerHTML = matches.length
-    ? matches.map((train) => `
-      <div class="result-item">
-        <div>
-          <strong>${train.name} · ${train.id}</strong>
-          <p class="muted">${train.route} · ${train.distance.toFixed(1)} km · ${train.speed} km/h</p>
-        </div>
-        <button class="track-btn" data-track="${train.id}">Track</button>
-      </div>
-    `).join("")
+    ? matches.map(t => `
+        <div class="result-item">
+          <div>
+            <strong>${t.name} · ${t.id}</strong>
+            <p class="muted">DEMO · ${t.route} · ${t.distance.toFixed(1)} km · ${t.speed} km/h</p>
+          </div>
+          <button class="track-btn" data-track="${t.id}">Track demo</button>
+        </div>`).join("")
     : '<p class="muted">No matching train in the demo dataset.</p>';
 
-  document.querySelectorAll("#search-results [data-track]").forEach((button) => {
+  document.querySelectorAll("#search-results [data-track]").forEach(button => {
     button.addEventListener("click", () => trackTrain(button.dataset.track));
   });
 }
 
-/*
- * Reads the API response from:
- * GET http://localhost:3000/api/telemetry/latest
- */
 async function fetchRealTelemetry() {
   if (!CONFIG.apiBaseUrl) {
-    showToast("API mode selected, but apiBaseUrl is not configured.");
+    setHardwareStatus("API URL NOT CONFIGURED", true);
     return;
   }
 
@@ -521,26 +424,24 @@ async function fetchRealTelemetry() {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(
-        data.message || data.error || `API returned ${response.status}`
-      );
+      throw new Error(data.message || data.error || `API returned ${response.status}`);
     }
 
-    // Backend format: { ok, status, telemetry: {...} }
     const telemetry = data.telemetry || data;
+    lastTelemetry = telemetry;
 
-    if (telemetry.motorCurrentA !== undefined) {
+    if (telemetry.motorCurrentA !== undefined &&
+        Number.isFinite(Number(telemetry.motorCurrentA))) {
       motorCurrent = Number(telemetry.motorCurrentA);
     }
 
-    if (telemetry.bridgePositionPct !== undefined) {
-      deployment = Math.max(
-        0,
-        Math.min(100, Number(telemetry.bridgePositionPct))
-      );
+    if (telemetry.bridgePositionPct !== undefined &&
+        Number.isFinite(Number(telemetry.bridgePositionPct))) {
+      deployment = Math.max(0, Math.min(100, Number(telemetry.bridgePositionPct)));
     }
 
-    if (telemetry.wifiRssiDbm !== undefined) {
+    if (telemetry.wifiRssiDbm !== undefined &&
+        Number.isFinite(Number(telemetry.wifiRssiDbm))) {
       wifi = Number(telemetry.wifiRssiDbm);
     }
 
@@ -548,82 +449,64 @@ async function fetchRealTelemetry() {
 
     $("updated-at").textContent = "just now";
 
-    $("health-freshness").textContent =
-      data.status === "stale" ? "STALE DATA" : "just now";
+    const isStale = data.status === "stale";
+    const isDemo = telemetry.demo === true || telemetry.sensorValid === false;
 
-    const status = $("hardware-status");
+    $("health-freshness").textContent = isStale
+      ? "STALE DATA"
+      : isDemo
+        ? "LIVE · DEMO TELEMETRY"
+        : "LIVE DEVICE TELEMETRY";
 
-    if (status) {
-      status.innerHTML = data.status === "stale"
-        ? '<i style="background:var(--amber)"></i> ESP32: <b style="color:var(--amber)">STALE DATA</b>'
-        : '<i></i> ESP32: <b>LIVE TELEMETRY</b>';
-    }
+    setHardwareStatus(
+      isStale ? "STALE DATA" : isDemo ? "LIVE · DEMO DATA" : "LIVE TELEMETRY",
+      isStale || isDemo
+    );
+
+    const distance = telemetry.distanceCm == null
+      ? "not provided"
+      : `${telemetry.distanceCm} cm`;
+
+    const obstacle = telemetry.obstacleDetected == null
+      ? "not provided"
+      : String(telemetry.obstacleDetected);
 
     addEvent(
-      "ESP32 telemetry received",
-      `Device ${telemetry.deviceId || "unknown"} · position ${telemetry.bridgePositionPct ?? "n/a"}% · current ${telemetry.motorCurrentA ?? "n/a"} A`
+      isDemo ? "ESP32 demo telemetry received" : "ESP32 telemetry received",
+      `Device ${telemetry.deviceId || "unknown"} · distance ${distance} · obstacle ${obstacle} · bridge position ${telemetry.bridgePositionPct ?? "not provided"} · motor current ${telemetry.motorCurrentA ?? "not provided"}`
     );
-  } catch (error) {
-    const status = $("hardware-status");
 
-    if (status) {
-      status.innerHTML =
-        '<i style="background:var(--amber)"></i> ESP32: <b style="color:var(--amber)">OFFLINE / API ERROR</b>';
-    }
-
-    addEvent(
-      "Telemetry unavailable",
-      String(error.message || error),
-      "warning"
-    );
+  } catch (err) {
+    setHardwareStatus("OFFLINE / API ERROR", true);
+    $("health-freshness").textContent = "TELEMETRY UNAVAILABLE";
+    addEvent("Telemetry unavailable", String(err.message || err), "warning");
   }
 }
 
+function setHardwareStatus(label, warning = false) {
+  const status = $("hardware-status");
+  if (!status) return;
+
+  const color = warning ? "var(--amber)" : "var(--green)";
+  status.innerHTML =
+    `<i style="background:${color}"></i> ESP32: <b style="color:${color}">${escapeHtml(label)}</b>`;
+}
+
 function simulateTelemetry() {
-  trains.forEach((train) => {
-    train.distance = Math.max(
-      0.6,
-      Math.min(16, train.distance + (Math.random() - 0.45) * 0.18)
-    );
-
-    train.speed = Math.max(
-      35,
-      Math.min(125, Math.round(train.speed + (Math.random() - 0.5) * 5))
-    );
-
-    train.lat += (Math.random() - 0.5) * 0.0008;
-    train.lng += (Math.random() - 0.5) * 0.0008;
+  trains.forEach(t => {
+    t.distance = Math.max(0.6, Math.min(16, t.distance + (Math.random() - 0.45) * 0.18));
+    t.speed = Math.max(35, Math.min(125, Math.round(t.speed + (Math.random() - 0.5) * 5)));
+    t.lat += (Math.random() - 0.5) * 0.0008;
+    t.lng += (Math.random() - 0.5) * 0.0008;
   });
 
-  motorCurrent = Math.max(
-    0.4,
-    Math.min(3.7, motorCurrent + (Math.random() - 0.5) * 0.25)
-  );
-
-  wifi = Math.round(-43 - Math.random() * 17);
-
-  $("updated-at").textContent = "just now";
-  $("health-freshness").textContent = "just now";
-
   renderTrains();
-  renderBridge();
 
   if (map) {
-    trains.forEach((train) => {
-      if (!trainMarkers[train.id]) return;
-
-      trainMarkers[train.id].setLatLng([train.lat, train.lng]);
-
-      const color =
-        safetyFor(train) === "CRITICAL" ? "#ff6374" :
-        safetyFor(train) === "CAUTION" ? "#f7b84b" : "#48d7e8";
-
-      trainMarkers[train.id].setIcon(L.divIcon({
-        className: "train-pin",
-        html: `<div style="background:${color};border:2px solid #e8ffff;border-radius:50%;width:13px;height:13px;box-shadow:0 0 0 5px #48d7e822"></div>`,
-        iconSize: [13, 13],
-        iconAnchor: [6, 6]
-      }));
+    trains.forEach(t => {
+      if (trainMarkers[t.id]) {
+        trainMarkers[t.id].setLatLng([t.lat, t.lng]);
+      }
     });
   }
 }
@@ -631,30 +514,20 @@ function simulateTelemetry() {
 function exportCsv() {
   const lines = [
     ["time", "event", "details", "kind"],
-    ...eventLog.map((event) => [
-      event.time,
-      event.title,
-      event.detail,
-      event.kind
-    ])
+    ...eventLog.map(e => [e.time, e.title, e.detail, e.kind])
   ];
 
-  const csv = lines.map((row) =>
-    row.map((value) =>
-      `"${String(value).replace(/"/g, '""')}"`
-    ).join(",")
+  const csv = lines.map(row =>
+    row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
   ).join("\r\n");
 
-  const blob = new Blob([csv], {
-    type: "text/csv;charset=utf-8"
-  });
-
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
+  const a = document.createElement("a");
 
-  link.href = url;
-  link.download = "railsafe-session-events.csv";
-  link.click();
+  a.href = url;
+  a.download = "railsafe-session-events.csv";
+  a.click();
 
   URL.revokeObjectURL(url);
   showToast("Session event log exported as CSV.");
@@ -662,21 +535,12 @@ function exportCsv() {
 
 function scenario(type) {
   if (type === "normal") {
-    trains.forEach((train, index) => {
-      train.distance = 7 + index * 2.4;
-      train.speed = 70 + index * 7;
+    trains.forEach((t, i) => {
+      t.distance = 7 + i * 2.4;
+      t.speed = 70 + i * 7;
     });
-
     deployment = 100;
-    motorCurrent = 0.4;
-
-    $("hardware-status").innerHTML =
-      "<i></i> ESP32: <b>ONLINE · MOCK</b>";
-
-    addEvent(
-      "Scenario: normal corridor",
-      "Mock trains are outside the local safety zone."
-    );
+    addEvent("Scenario: normal corridor", "Mock train positions are outside the demo safety zone.");
   }
 
   if (type === "approach") {
@@ -684,37 +548,17 @@ function scenario(type) {
     trains[0].speed = 96;
     trains[3].distance = 2.1;
     deployment = 35;
-    motorCurrent = 2.4;
-
-    addEvent(
-      "Scenario: approaching train",
-      "Simulated safety alert shown for trains inside 5 km zone.",
-      "warning"
-    );
+    addEvent("Scenario: approaching train", "Illustrative safety alert — not connected to railway systems.", "warning");
   }
 
   if (type === "fault") {
-    motorCurrent = 4.8;
     wifi = -81;
-
-    $("hardware-status").innerHTML =
-      '<i style="background:var(--amber)"></i> ESP32: <b style="color:var(--amber)">DEGRADED · MOCK</b>';
-
-    addEvent(
-      "Scenario: simulated device fault",
-      "Mock telemetry set to high current and weak link. No real device is affected.",
-      "warning"
-    );
+    addEvent("Scenario: simulated device fault", "Mock fault scenario only; no real device is affected.", "warning");
   }
 
   renderTrains();
   renderBridge();
-
-  if (type === "fault") {
-    showToast("Simulated fault applied. No hardware is connected.");
-  } else {
-    showToast("Scenario applied: " + type);
-  }
+  showToast("Demo scenario applied: " + type);
 }
 
 function init() {
@@ -728,44 +572,31 @@ function init() {
 
   addEvent(
     "Dashboard initialized",
-    "RAILSAFE frontend loaded in mock telemetry mode."
+    CONFIG.mode === "api"
+      ? "Backend API mode enabled. Train and bridge movement data remain simulated."
+      : "Dashboard loaded in mock mode."
   );
 
   addEvent(
-    "ESP32 status simulated",
-    "No physical device connection has been established."
-  );
-
-  addEvent(
-    "Safety interlock initialized",
-    "Train proximity and bridge interlock are illustrative mock values.",
+    "Safety notice",
+    "This prototype is not connected to railway signalling or physical bridge controls.",
     "warning"
   );
 
-  document.querySelectorAll(".nav-tab").forEach((button) => {
+  document.querySelectorAll(".nav-tab").forEach(button => {
     button.addEventListener("click", () => switchView(button.dataset.view));
   });
 
-  $("role-select").addEventListener("change", (event) => {
-    setRole(event.target.value);
-  });
-
-  $("menu-toggle").addEventListener("click", () => {
-    $("nav-tabs").classList.toggle("open");
-  });
+  $("role-select").addEventListener("change", e => setRole(e.target.value));
+  $("menu-toggle").addEventListener("click", () => $("nav-tabs").classList.toggle("open"));
 
   $("refresh-btn").addEventListener("click", () => {
     if (CONFIG.mode === "api") {
       fetchRealTelemetry();
     } else {
       simulateTelemetry();
-
-      addEvent(
-        "Manual refresh",
-        "Mock train and device telemetry refreshed."
-      );
-
-      showToast("Mock telemetry refreshed.");
+      addEvent("Manual refresh", "Demo train data refreshed.");
+      showToast("Demo data refreshed.");
     }
   });
 
@@ -774,48 +605,30 @@ function init() {
     $("map-position").textContent = "15.5034, 80.0505";
   });
 
-  document.querySelectorAll("[data-action]").forEach((button) => {
+  document.querySelectorAll("[data-action]").forEach(button => {
     button.addEventListener("click", () => actionBridge(button.dataset.action));
   });
 
   $("audio-toggle").addEventListener("click", () => {
     audioOn = !audioOn;
-
     $("audio-label").textContent = audioOn ? "Sound on" : "Sound off";
     $("audio-toggle").setAttribute("aria-pressed", String(audioOn));
 
-    showToast(
-      audioOn
-        ? "Demo audio alerts enabled (browser simulation)."
-        : "Demo audio alerts muted."
-    );
+    showToast(audioOn
+      ? "Demo audio alerts enabled."
+      : "Demo audio alerts muted.");
 
     if (audioOn && "speechSynthesis" in window) {
-      const utterance = new SpeechSynthesisUtterance(
-        "RAILSAFE demo audio alerts enabled"
-      );
-
+      const utterance = new SpeechSynthesisUtterance("RAILSAFE demo audio alerts enabled");
       utterance.volume = 0.35;
       speechSynthesis.speak(utterance);
     }
   });
 
-  $("disclaimer-btn").addEventListener("click", () =>
-    $("disclaimer-modal").classList.remove("hidden")
-  );
-
-  $("modal-close").addEventListener("click", () =>
-    $("disclaimer-modal").classList.add("hidden")
-  );
-
-  $("modal-ack").addEventListener("click", () =>
-    $("disclaimer-modal").classList.add("hidden")
-  );
-
-  $("dismiss-note").addEventListener("click", () =>
-    $("prototype-note").classList.add("hidden")
-  );
-
+  $("disclaimer-btn").addEventListener("click", () => $("disclaimer-modal").classList.remove("hidden"));
+  $("modal-close").addEventListener("click", () => $("disclaimer-modal").classList.add("hidden"));
+  $("modal-ack").addEventListener("click", () => $("disclaimer-modal").classList.add("hidden"));
+  $("dismiss-note").addEventListener("click", () => $("prototype-note").classList.add("hidden"));
   $("export-logs").addEventListener("click", exportCsv);
 
   $("clear-logs").addEventListener("click", () => {
@@ -825,24 +638,19 @@ function init() {
   });
 
   $("train-search-btn").addEventListener("click", runSearch);
-
-  $("train-search-input").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") runSearch();
+  $("train-search-input").addEventListener("keydown", e => {
+    if (e.key === "Enter") runSearch();
   });
 
-  document.querySelectorAll("[data-scenario]").forEach((button) => {
+  document.querySelectorAll("[data-scenario]").forEach(button => {
     button.addEventListener("click", () => scenario(button.dataset.scenario));
   });
 
   if (CONFIG.mode === "api") {
     fetchRealTelemetry();
     setInterval(fetchRealTelemetry, CONFIG.telemetryIntervalMs);
-
-    addEvent(
-      "API mode enabled",
-      "Train positions remain illustrative until an authorized train data source is configured."
-    );
   } else {
+    setHardwareStatus("MOCK MODE", true);
     setInterval(simulateTelemetry, CONFIG.telemetryIntervalMs);
   }
 }
